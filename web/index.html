@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Landmine Detection — Serverless ML Inference (AWS)</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a2129; --line:#2b3640; --txt:#e6edf3; --muted:#8b98a5; --accent:#ff5a5a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: var(--bg); color: var(--txt); }
+  header { padding: 28px 24px 8px; max-width: 980px; margin: 0 auto; }
+  h1 { margin:0 0 4px; font-size: 22px; }
+  header p { margin:0; color: var(--muted); font-size: 14px; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 24px 60px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 16px 0; }
+  input[type=text] { flex:1; min-width:260px; background:var(--panel); border:1px solid var(--line);
+        color:var(--txt); padding:10px 12px; border-radius:8px; font-size:14px; }
+  input[type=range] { width:160px; }
+  button { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:8px;
+        font-size:14px; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  label.small { color:var(--muted); font-size:13px; }
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:34px; text-align:center;
+        color:var(--muted); cursor:pointer; transition:border-color .15s; }
+  .drop.hover { border-color: var(--accent); color: var(--txt); }
+  .canvas-wrap { margin-top:18px; background:var(--panel); border:1px solid var(--line);
+        border-radius:12px; padding:12px; }
+  canvas { max-width:100%; height:auto; display:block; border-radius:8px; }
+  .meta { display:flex; gap:24px; flex-wrap:wrap; margin-top:12px; font-size:14px; color:var(--muted); }
+  .meta b { color:var(--txt); }
+  .err { color: var(--accent); font-size:14px; margin-top:10px; }
+  footer { color:var(--muted); font-size:12px; text-align:center; padding-bottom:30px; }
+  code { background:var(--panel); padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Landmine Detection — Serverless ML Inference</h1>
+  <p>YOLO11 thermal-imagery detector served from AWS Lambda + API Gateway. Drop an image to run inference.</p>
+</header>
+<main>
+  <div class="row">
+    <input id="api" type="text" placeholder="API base URL, e.g. https://abc123.execute-api.ap-southeast-2.amazonaws.com" />
+  </div>
+  <div class="row">
+    <label class="small">Confidence: <span id="confVal">0.25</span></label>
+    <input id="conf" type="range" min="0.05" max="0.9" step="0.05" value="0.25" />
+  </div>
+
+  <div id="drop" class="drop">Click or drop a thermal image here</div>
+  <input id="file" type="file" accept="image/*" hidden />
+
+  <div id="err" class="err"></div>
+
+  <div id="result" class="canvas-wrap" style="display:none">
+    <canvas id="canvas"></canvas>
+    <div class="meta">
+      <span>Detections: <b id="count">0</b></span>
+      <span>Latency: <b id="latency">–</b></span>
+      <span id="topwrap" style="display:none">Top confidence: <b id="top">–</b></span>
+    </div>
+  </div>
+
+  <p class="small" style="margin-top:20px">
+    Tip: the same page works for any YOLO model behind this API — the boxes and labels come
+    straight from the model's classes. Set the API URL to the <code>ApiBaseUrl</code> output
+    from your SAM deploy.
+  </p>
+</main>
+<footer>Built by Dawod Ghifari · PyTorch → ONNX → AWS Lambda (container) → API Gateway → DynamoDB</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), fileInput = $("file");
+$("conf").addEventListener("input", e => $("confVal").textContent = e.target.value);
+
+drop.addEventListener("click", () => fileInput.click());
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hover"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hover"); }));
+drop.addEventListener("drop", e => { if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", e => { if (e.target.files[0]) handle(e.target.files[0]); });
+
+async function handle(file) {
+  $("err").textContent = "";
+  const api = $("api").value.trim().replace(/\/$/, "");
+  if (!api) { $("err").textContent = "Enter your API base URL first."; return; }
+
+  const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+  const base64 = dataUrl.split(",")[1];
+
+  drop.textContent = "Running inference…";
+  try {
+    const resp = await fetch(api + "/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_base64: base64, conf: parseFloat($("conf").value), annotate: false })
+    });
+    if (!resp.ok) throw new Error("API returned " + resp.status);
+    const out = await resp.json();
+    draw(dataUrl, out);
+  } catch (e) {
+    $("err").textContent = "Request failed: " + e.message + ". Check the URL and that the stack is deployed.";
+  } finally {
+    drop.textContent = "Click or drop a thermal image here";
+  }
+}
+
+function draw(dataUrl, out) {
+  const img = new Image();
+  img.onload = () => {
+    const canvas = $("canvas"), ctx = canvas.getContext("2d");
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    ctx.drawImage(img, 0, 0);
+    ctx.lineWidth = Math.max(2, img.naturalWidth / 250);
+    ctx.strokeStyle = "#ff5a5a"; ctx.fillStyle = "#ff5a5a";
+    ctx.font = `${Math.max(14, img.naturalWidth/45)}px system-ui`;
+    (out.detections || []).forEach(d => {
+      const [x1,y1,x2,y2] = d.box;
+      ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+      const cap = `${d.label} ${(d.confidence*100).toFixed(0)}%`;
+      const tw = ctx.measureText(cap).width + 8, th = parseInt(ctx.font) + 4;
+      ctx.fillRect(x1, Math.max(0, y1-th), tw, th);
+      ctx.fillStyle = "#fff"; ctx.fillText(cap, x1+4, Math.max(th-4, y1-4));
+      ctx.fillStyle = "#ff5a5a";
+    });
+    $("result").style.display = "block";
+    $("count").textContent = out.num_detections ?? (out.detections||[]).length;
+    $("latency").textContent = (out.latency_ms ?? "–") + " ms";
+    const top = (out.detections||[]).reduce((m,d) => Math.max(m, d.confidence), 0);
+    if (top) { $("topwrap").style.display = "inline"; $("top").textContent = (top*100).toFixed(1) + "%"; }
+  };
+  img.src = dataUrl;
+}
+</script>
+</body>
+</html>

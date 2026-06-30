@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Serverless YOLO object-detection inference API (landmine detector).
+  API Gateway (HTTP API) -> Lambda (container image, ONNX Runtime) -> DynamoDB logging.
+
+Globals:
+  Function:
+    # Detection at 640px is heavier than classification: more memory also buys more
+    # vCPU on Lambda, which cuts inference latency. 60s timeout covers cold starts.
+    Timeout: 60
+    MemorySize: 3008
+  HttpApi:
+    # Let browsers call the API directly (the static demo page does a JSON POST, which
+    # triggers a CORS preflight). API Gateway answers the preflight automatically.
+    CorsConfiguration:
+      AllowOrigins:
+        - "*"
+      AllowHeaders:
+        - content-type
+      AllowMethods:
+        - GET
+        - POST
+        - OPTIONS
+
+Resources:
+  InferenceLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ml-inference-logs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  InferenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      # x86_64, not arm64: on Graviton, onnxruntime's CPU detection reads /sys (absent on
+      # Lambda) and crashes at cold start. x86_64 reads CPU info via CPUID and works.
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref InferenceLogTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InferenceLogTable
+      Events:
+        Predict:
+          Type: HttpApi
+          Properties:
+            Path: /predict
+            Method: post
+        Stats:
+          Type: HttpApi
+          Properties:
+            Path: /stats
+            Method: get
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./app
+      DockerTag: latest
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL of the inference API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  PredictEndpoint:
+    Description: POST an image here to detect landmines
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/predict"
+  StatsEndpoint:
+    Description: GET recent inference logs
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/stats"
+  DynamoTable:
+    Description: DynamoDB table storing inference logs
+    Value: !Ref InferenceLogTable

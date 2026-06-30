@@ -1,0 +1,2 @@
+# The exported model.onnx (and labels.json) are written here by scripts/export_model.py.
+# These are git-ignored because they are large/binary; regenerate with the export script.

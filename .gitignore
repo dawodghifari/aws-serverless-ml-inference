@@ -1,0 +1,23 @@
+# Model artefacts (regenerate with scripts/export_model.py)
+app/model/*.onnx
+app/model/labels.json
+
+# Model weights — large binaries, downloaded/trained, never committed
+*.pt
+*.onnx
+
+# Local test output
+annotated*.png
+
+# SAM / build artefacts
+.aws-sam/
+samconfig.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
