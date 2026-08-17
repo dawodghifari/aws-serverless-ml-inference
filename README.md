@@ -18,7 +18,7 @@ browser demo / client ──POST /predict──▶ API Gateway (HTTP API) ──
 A trained model is only useful once it is deployed and serving real requests. This project
 takes the YOLO11 landmine detector from
 [landmine-detection-yolo](https://github.com/dawodghifari/landmine-detection-yolo)
-(thermal UAV imagery, mAP@50 0.68), exports it to ONNX, packages it as a container-image
+(thermal UAV imagery, validation mAP@50 0.675), exports it to ONNX, packages it as a container-image
 Lambda, and exposes it through API Gateway — with DynamoDB capturing a log of every
 inference (detection count, top confidence, latency). A static browser demo draws the
 returned boxes over the uploaded image.
@@ -101,6 +101,21 @@ web/
 DEPLOY.md                # step-by-step deployment + teardown
 ```
 
+## Three things that broke on the way here
+
+**onnxruntime crashed on cold start, only on arm64.** The Graviton build reads `/sys` to
+detect CPU features, and that path does not exist in the Lambda execution environment. It
+failed at import, before any of my code ran, so the logs showed almost nothing. Moved the
+image to x86_64.
+
+**`Runtime.InvalidEntrypoint` with a Dockerfile that was demonstrably correct.** Docker's
+containerd image store produces a multi-manifest image by default, and Lambda cannot pick
+an architecture out of one. The fix is a build flag, not a Dockerfile change — which is why
+reading the Dockerfile repeatedly got me nowhere.
+
+**CORS preflight on the browser demo.** `OPTIONS` has to be answered by the function itself
+when the route is a Lambda proxy, so the handler routes it explicitly.
+
 ## Notes / next steps
 
 - `/stats` uses a small DynamoDB scan for demo simplicity; for scale, add a GSI on
@@ -109,9 +124,15 @@ DEPLOY.md                # step-by-step deployment + teardown
   removes it if needed.
 - Pre-processing letterboxes to 640×640 (aspect-ratio preserving, grey padding) to match
   YOLO training; boxes are mapped back to original-image pixels before they're returned.
-- The negative-image (false-positive) behaviour discussed in the model repo applies here
-  too — tune `conf` per request to trade recall against precision.
 
----
+## Limitations
 
-*Built by Dawod Ghifari to deploy ML models as serverless APIs on AWS.*
+- **The deployed model is a pretrained COCO YOLO11 checkpoint, not the landmine detector.**
+  The trained `best.pt` was not to hand when this was built. The handler is class-agnostic
+  and reads its class count from the model output, so swapping in the real weights is one
+  command and a redeploy — but as it stands this serves a general object detector.
+- Single-region (`ap-southeast-2`), single-environment. No staging stack, no blue/green.
+- Logging is inference metadata to DynamoDB. There are no alarms, no dashboards and no SLO
+  on this service; it records what happened rather than telling anyone about it.
+- The landmine detector's 15.1% false-alarm rate on mine-free scenes applies here too. Tune
+  `conf` per request to trade recall against precision.
