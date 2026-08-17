@@ -18,7 +18,7 @@ browser demo / client ──POST /predict──▶ API Gateway (HTTP API) ──
 A trained model is only useful once it is deployed and serving real requests. This project
 takes the YOLO11 landmine detector from
 [landmine-detection-yolo](https://github.com/dawodghifari/landmine-detection-yolo)
-(thermal UAV imagery, validation mAP@50 0.675), exports it to ONNX, packages it as a container-image
+(thermal UAV imagery, test mAP@50 0.904), exports it to ONNX, packages it as a container-image
 Lambda, and exposes it through API Gateway — with DynamoDB capturing a log of every
 inference (detection count, top confidence, latency). A static browser demo draws the
 returned boxes over the uploaded image.
