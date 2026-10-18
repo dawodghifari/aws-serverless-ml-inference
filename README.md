@@ -1,5 +1,7 @@
 # Serverless YOLO Object-Detection API on AWS
 
+![CI](https://github.com/dawodghifari/aws-serverless-ml-inference/actions/workflows/ci.yml/badge.svg)
+
 A fully serverless **object-detection** API. Send an image, get back bounding boxes plus an
 annotated image, with every inference logged to DynamoDB, all on AWS with no servers to
 manage. Built to serve a YOLO11 landmine detector, it was deployed with a pretrained COCO
@@ -83,6 +85,14 @@ python scripts/test_request.py <API_BASE_URL> test_thermal.jpg
 #   then open web/index.html, paste your API URL, and drop an image
 ```
 
+## Tests
+
+`pip install -r requirements-test.txt && python -m pytest tests` runs 14 tests in under a
+second, with no model file and no AWS account: ONNX Runtime and DynamoDB are replaced by
+fakes. They cover letterboxing, IoU and NMS, decoding raw YOLO output back to
+original-image pixels, routing and request parsing, per-request thresholds, best-effort
+logging, and `/stats`. CI also runs `cfn-lint` on `template.yaml` and builds the Lambda image.
+
 ## Serving your own weights
 
 The handler is **class-agnostic**: it reads the number of classes straight from the model
@@ -105,6 +115,7 @@ scripts/
   test_request.py        # send a local image to the API, save the annotated result
 web/
   index.html             # browser demo: drop an image, see boxes drawn
+tests/                   # unit tests (fake ONNX session, fake DynamoDB table)
 DEPLOY.md                # step-by-step deployment + teardown
 ```
 
