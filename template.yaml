@@ -11,6 +11,12 @@ Globals:
     Timeout: 60
     MemorySize: 3008
   HttpApi:
+    # Throttle at the edge. This is a public, unauthenticated endpoint on a 3 GB
+    # function, so requests over the limit get a 429 from API Gateway before
+    # Lambda is invoked or billed.
+    DefaultRouteSettings:
+      ThrottlingRateLimit: 5
+      ThrottlingBurstLimit: 10
     # Let browsers call the API directly (the static demo page does a JSON POST, which
     # triggers a CORS preflight). API Gateway answers the preflight automatically.
     CorsConfiguration:
@@ -32,9 +38,25 @@ Resources:
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
       KeySchema:
         - AttributeName: id
           KeyType: HASH
+      # Lets /stats read the newest logs in order. Every item carries
+      # pk = "inference", which is a single partition: fine at demo volume, and the
+      # first thing to shard (pk = "inference#<day>") if traffic were real.
+      GlobalSecondaryIndexes:
+        - IndexName: by-time
+          KeySchema:
+            - AttributeName: pk
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   InferenceFunction:
     Type: AWS::Serverless::Function

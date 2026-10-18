@@ -19,8 +19,10 @@ with a pretrained COCO YOLO11n.
 """
 
 import base64
+import binascii
 import io
 import json
+import logging
 import os
 import time
 import uuid
@@ -29,7 +31,7 @@ from decimal import Decimal
 
 import numpy as np
 import onnxruntime as ort
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 # ---- Cold-start initialisation (runs once per container) ------------------
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model", "model.onnx")
@@ -41,9 +43,23 @@ INPUT_SIZE = int(os.environ.get("INPUT_SIZE", "640"))
 DEFAULT_CONF = float(os.environ.get("CONF_THRESHOLD", "0.25"))
 DEFAULT_IOU = float(os.environ.get("IOU_THRESHOLD", "0.45"))
 
-# On AWS Lambda, /sys/devices/system/cpu is not exposed, so ONNX Runtime's CPU
-# auto-detection fails and then crashes trying to log the failure before its logger
-# exists. Setting the thread counts explicitly skips that auto-detection path.
+# Largest decoded image accepted. Lambda caps a synchronous request at 6 MB and
+# base64 inflates by a third, so a bigger image cannot arrive intact anyway;
+# rejecting it here gives the caller a clear 413 instead of a gateway error.
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(4 * 1024 * 1024)))
+
+# /stats reads newest-first from this GSI (partition "inference", sorted by
+# timestamp); see template.yaml.
+STATS_INDEX = os.environ.get("STATS_INDEX", "by-time")
+STATS_PARTITION = "inference"
+
+log = logging.getLogger()
+log.setLevel(logging.INFO)
+
+# Thread counts are set explicitly rather than sized by ONNX Runtime's CPU
+# auto-detection, which reads /sys/devices/system/cpu (not exposed on Lambda). That
+# detection is what crashed cold starts on arm64; the fix was moving the function
+# to x86_64 (template.yaml). The explicit counts stay as a second guard.
 _sess_options = ort.SessionOptions()
 _sess_options.intra_op_num_threads = int(os.environ.get("ORT_INTRA_OP_THREADS", "2"))
 _sess_options.inter_op_num_threads = 1
@@ -189,21 +205,53 @@ def _response(status: int, body: dict) -> dict:
 
 
 # ---- Route handlers -------------------------------------------------------
-def _predict(event: dict) -> dict:
+class BadRequest(ValueError):
+    """A client error, returned as a 4xx carrying this message."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def _parse_body(event: dict) -> dict:
     body = event.get("body") or "{}"
-    if event.get("isBase64Encoded"):
-        body = base64.b64decode(body).decode("utf-8")
-    payload = json.loads(body)
+    try:
+        if event.get("isBase64Encoded"):
+            body = base64.b64decode(body).decode("utf-8")
+        payload = json.loads(body)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        raise BadRequest("Request body must be JSON.") from None
+    if not isinstance(payload, dict):
+        raise BadRequest("Request body must be a JSON object.")
+    return payload
+
+
+def _predict(event: dict) -> dict:
+    payload = _parse_body(event)
 
     if "image_base64" not in payload:
         return _response(400, {"error": "Provide 'image_base64' in the request body."})
 
-    conf_thr = float(payload.get("conf", DEFAULT_CONF))
-    iou_thr = float(payload.get("iou", DEFAULT_IOU))
+    try:
+        conf_thr = float(payload.get("conf", DEFAULT_CONF))
+        iou_thr = float(payload.get("iou", DEFAULT_IOU))
+    except (TypeError, ValueError):
+        raise BadRequest("'conf' and 'iou' must be numbers.") from None
+    if not (0.0 <= conf_thr <= 1.0 and 0.0 <= iou_thr <= 1.0):
+        raise BadRequest("'conf' and 'iou' must be between 0 and 1.")
     want_annotated = bool(payload.get("annotate", True))
 
-    image_bytes = base64.b64decode(payload["image_base64"])
-    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        image_bytes = base64.b64decode(payload["image_base64"], validate=True)
+    except (binascii.Error, TypeError, ValueError):
+        raise BadRequest("'image_base64' is not valid base64.") from None
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        raise BadRequest(f"Image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB.", 413)
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+        raise BadRequest("'image_base64' does not decode to a readable image.") from None
 
     start = time.perf_counter()
     tensor, scale, pad_x, pad_y = _preprocess(img)
@@ -231,21 +279,28 @@ def _log_inference(result: dict) -> None:
         _get_table().put_item(
             Item={
                 "id": result["id"],
+                "pk": STATS_PARTITION,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "num_detections": result["num_detections"],
                 "top_confidence": Decimal(str(round(top_conf, 4))),
                 "latency_ms": Decimal(str(result["latency_ms"])),
             }
         )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[warn] DynamoDB log failed: {exc}")
+    except Exception:  # noqa: BLE001
+        log.warning("DynamoDB log failed", exc_info=True)
 
 
 def _stats(_event: dict) -> dict:
-    # Demo-scale scan; for production use a GSI on timestamp instead of a scan.
-    resp = _get_table().scan(Limit=25)
+    # Newest first from the by-time GSI. A Scan with Limit returns an arbitrary
+    # 25 items, not the latest 25, once the table holds more than that.
+    resp = _get_table().query(
+        IndexName=STATS_INDEX,
+        KeyConditionExpression="pk = :pk",
+        ExpressionAttributeValues={":pk": STATS_PARTITION},
+        ScanIndexForward=False,
+        Limit=25,
+    )
     items = resp.get("Items", [])
-    items.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     return _response(
         200,
         {
@@ -265,7 +320,7 @@ def _stats(_event: dict) -> dict:
 
 
 # ---- Entry point ----------------------------------------------------------
-def lambda_handler(event, _context):
+def lambda_handler(event, context):
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("requestContext", {}).get("http", {}).get("path", "")
     try:
@@ -274,5 +329,10 @@ def lambda_handler(event, _context):
         if path.endswith("/stats") and method == "GET":
             return _stats(event)
         return _response(404, {"error": f"No route for {method} {path}"})
-    except Exception as exc:  # noqa: BLE001 - surface a clean error to the caller
-        return _response(500, {"error": str(exc)})
+    except BadRequest as exc:
+        return _response(exc.status, {"error": str(exc)})
+    except Exception:  # noqa: BLE001
+        # The detail goes to CloudWatch for the operator, never to the caller.
+        log.exception("unhandled error on %s %s (request %s)", method, path,
+                      getattr(context, "aws_request_id", "-"))
+        return _response(500, {"error": "Internal error."})
