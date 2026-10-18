@@ -1,8 +1,9 @@
-# Serverless Landmine Detection API on AWS
+# Serverless YOLO Object-Detection API on AWS
 
-A production-style, fully serverless **object-detection** API. Send a thermal image, get
-back bounding boxes for detected landmines plus an annotated image — every request logged
-for observability, all running on AWS with no servers to manage.
+A fully serverless **object-detection** API. Send an image, get back bounding boxes plus an
+annotated image, with every inference logged to DynamoDB, all on AWS with no servers to
+manage. Built to serve a YOLO11 landmine detector, it was deployed with a pretrained COCO
+YOLO11n (see [Limitations](#limitations)); the handler serves either without code changes.
 
 ```
 browser demo / client ──POST /predict──▶ API Gateway (HTTP API) ──▶ AWS Lambda (container image)
@@ -16,12 +17,13 @@ browser demo / client ──POST /predict──▶ API Gateway (HTTP API) ──
 ## Why this exists
 
 A trained model is only useful once it is deployed and serving real requests. This project
-takes the YOLO11 landmine detector from
+is the deployment path for the YOLO11 landmine detector from
 [landmine-detection-yolo](https://github.com/dawodghifari/landmine-detection-yolo)
-(thermal UAV imagery, test mAP@50 0.904), exports it to ONNX, packages it as a container-image
-Lambda, and exposes it through API Gateway — with DynamoDB capturing a log of every
-inference (detection count, top confidence, latency). A static browser demo draws the
-returned boxes over the uploaded image.
+(thermal UAV imagery, test mAP@50 0.904): export to ONNX, package as a container-image
+Lambda, expose through API Gateway, and capture a DynamoDB log of every inference (detection
+count, top confidence, latency). The pipeline is model-agnostic. The stack was deployed with a
+pretrained COCO YOLO11n, because the trained landmine weights were not to hand at deploy
+time. A static browser demo draws the returned boxes over the uploaded image.
 
 ## Stack
 
@@ -43,16 +45,21 @@ returned boxes over the uploaded image.
   PNG, logged to DynamoDB.
 - `GET /stats` — most recent inference logs (count, top confidence, latency).
 
-Example `/predict` response:
+Example `/predict` response, produced by `app/handler.py` run locally with the pretrained
+COCO YOLO11n on Ultralytics' `bus.jpg` sample image (annotated PNG elided; the latency is a
+local CPU figure, not a Lambda one):
 
 ```json
 {
-  "id": "…",
-  "latency_ms": 180.3,
-  "num_detections": 2,
+  "id": "6973286e-f7d5-4f07-b104-2aa4d9e215df",
+  "latency_ms": 60.08,
+  "num_detections": 5,
   "detections": [
-    {"label": "landmine", "class_id": 0, "confidence": 0.81, "box": [412.0, 233.5, 470.2, 291.8]},
-    {"label": "landmine", "class_id": 0, "confidence": 0.54, "box": [120.4,  88.1, 165.0, 140.9]}
+    {"label": "bus",    "class_id": 5, "confidence": 0.9399, "box": [16.3, 228.4, 798.1, 734.2]},
+    {"label": "person", "class_id": 0, "confidence": 0.9014, "box": [48.3, 398.7, 242.9, 905.3]},
+    {"label": "person", "class_id": 0, "confidence": 0.8454, "box": [670.6, 394.1, 809.9, 879.8]},
+    {"label": "person", "class_id": 0, "confidence": 0.8258, "box": [220.4, 403.7, 345.0, 859.7]},
+    {"label": "person", "class_id": 0, "confidence": 0.3818, "box": [-0.0, 550.2, 66.6, 871.3]}
   ],
   "annotated_image_base64": "<png>"
 }
@@ -113,8 +120,10 @@ containerd image store produces a multi-manifest image by default, and Lambda ca
 an architecture out of one. The fix is a build flag, not a Dockerfile change — which is why
 reading the Dockerfile repeatedly got me nowhere.
 
-**CORS preflight on the browser demo.** `OPTIONS` has to be answered by the function itself
-when the route is a Lambda proxy, so the handler routes it explicitly.
+**CORS preflight on the browser demo.** The demo's JSON `POST` triggers an `OPTIONS`
+preflight, which failed until CORS was configured on the API itself. HTTP APIs answer the
+preflight from `CorsConfiguration` in `template.yaml` and ignore CORS headers returned by a
+Lambda proxy integration, so the fix lives in the template and the handler sets none.
 
 ## Notes / next steps
 
@@ -134,5 +143,6 @@ when the route is a Lambda proxy, so the handler routes it explicitly.
 - Single-region (`ap-southeast-2`), single-environment. No staging stack, no blue/green.
 - Logging is inference metadata to DynamoDB. There are no alarms, no dashboards and no SLO
   on this service; it records what happened rather than telling anyone about it.
-- The landmine detector's 15.1% false-alarm rate on mine-free scenes applies here too. Tune
-  `conf` per request to trade recall against precision.
+- Once the landmine weights are swapped in, expect its 15.1% false-alarm rate on mine-free
+  scenes (measured in the landmine repo). `conf` can be tuned per request to trade recall
+  against precision.

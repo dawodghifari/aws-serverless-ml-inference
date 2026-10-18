@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Serverless YOLO object-detection inference API (landmine detector).
+  Serverless YOLO object-detection inference API.
   API Gateway (HTTP API) -> Lambda (container image, ONNX Runtime) -> DynamoDB logging.
 
 Globals:
@@ -71,7 +71,7 @@ Outputs:
     Description: Base URL of the inference API
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   PredictEndpoint:
-    Description: POST an image here to detect landmines
+    Description: POST an image here to run object detection
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/predict"
   StatsEndpoint:
     Description: GET recent inference logs

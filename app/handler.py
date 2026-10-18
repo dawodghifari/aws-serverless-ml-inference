@@ -12,9 +12,10 @@ The ONNX model lives at model/model.onnx. Class names are read from
 model/labels.json (a JSON array of class-name strings indexed by class id).
 Export your trained YOLO weights with scripts/export_model.py.
 
-This serves a single-class landmine detector by default, but the code is
+It was written for a single-class landmine detector, and the code is
 class-agnostic: it reads the class count straight from the model output, so the
-same handler serves any YOLOv8/YOLO11 detection model you export.
+same handler serves any YOLOv8/YOLO11 detection model you export. It was deployed
+with a pretrained COCO YOLO11n.
 """
 
 import base64
