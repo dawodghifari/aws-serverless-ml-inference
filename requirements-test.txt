@@ -1,0 +1,5 @@
+# The unit tests replace ONNX Runtime and DynamoDB with fakes, so they need
+# only the pre/post-processing stack, pinned to match app/requirements.txt.
+numpy==1.26.4
+Pillow==10.4.0
+pytest>=8.0
