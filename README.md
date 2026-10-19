@@ -138,8 +138,16 @@ Lambda proxy integration, so the fix lives in the template and the handler sets 
 
 ## Notes / next steps
 
-- `/stats` uses a small DynamoDB scan for demo simplicity; for scale, add a GSI on
-  `timestamp` and query it.
+- **Throttled at the edge:** API Gateway allows 5 requests/s with a burst of 10 and answers
+  the rest with 429 before Lambda runs, so a public endpoint on a 3 GB function cannot run
+  up the bill.
+- **Errors:** malformed JSON, bad base64, an unreadable image or out-of-range `conf`/`iou`
+  return 400 with the reason; an image over 4 MB returns 413. Anything unexpected returns
+  a generic 500 and the detail goes to CloudWatch, never to the caller.
+- `/stats` queries a GSI (`by-time`: partition `inference`, sorted by timestamp) for the
+  newest 25 logs. It is one partition, which is fine at demo volume; with real traffic the
+  partition would be sharded by day. Rows written before the GSI existed carry no `pk` and
+  are not listed.
 - Cold starts: the first request after idle pays model-load time; provisioned concurrency
   removes it if needed.
 - Pre-processing letterboxes to 640×640 (aspect-ratio preserving, grey padding) to match
